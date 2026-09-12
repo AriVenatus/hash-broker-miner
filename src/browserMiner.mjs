@@ -282,6 +282,13 @@ export class BrowserMiner {
         '--use-gl=angle',
         '--ignore-gpu-blocklist',
         '--disable-gpu-sandbox',
+        // Chrome's GPU-process Vulkan instance creation unconditionally
+        // requests platform surface extensions (for presenting to an
+        // actual window), which don't exist without a display server --
+        // confirmed via stderr: "vkCreateInstance() failed: -7"
+        // (VK_ERROR_EXTENSION_NOT_PRESENT). We only need compute, no
+        // presentation surface at all, so skip requesting it.
+        '--disable-vulkan-surface',
         '--enable-logging=stderr',
         '--v=1'
       ]
