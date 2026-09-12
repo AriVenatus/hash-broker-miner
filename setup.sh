@@ -93,7 +93,7 @@ if command -v apt-get >/dev/null 2>&1; then
     libgbm1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 \
     libpangocairo-1.0-0 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 \
     libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 \
-    libxtst6 lsb-release wget xdg-utils"
+    libxtst6 lsb-release wget xdg-utils xvfb"
   info "Installing headless Chrome's system library dependencies..."
   if [ "$(id -u)" -eq 0 ]; then
     apt-get update -qq && apt-get install -y -qq $CHROME_DEPS \

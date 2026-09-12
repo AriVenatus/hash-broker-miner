@@ -9,9 +9,37 @@
 // GPU access ourselves.
 import puppeteer from 'puppeteer';
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import { buildShader, WORKGROUP_SIZE, WORKGROUPS, ITERATIONS } from './shader.mjs';
 
 const SOFTWARE_ADAPTER_PATTERN = /llvmpipe|swiftshader|software|basic render|lavapipe/i;
+
+// Headless-mode GPU support has hit two different Vulkan/GPU-process
+// edge cases in a row in this exact container (a vkCreateInstance
+// EXTENSION_NOT_PRESENT failure, then a GpuControl.CreateCommandBuffer
+// transient failure) -- each fixable with its own obscure flag, but that's
+// the same one-flag-at-a-time guessing this whole rewrite was meant to
+// get away from. Xvfb + normal (non-headless) Chrome is the actually
+// battle-tested pattern for GPU-accelerated Chrome in CI/Docker (what
+// Chrome's own GPU test bots and most Selenium/Puppeteer GPU pipelines
+// use), so run that way instead of continuing to fight headless-specific
+// quirks. A random high display number avoids colliding with a stale
+// Xvfb left behind by a killed/crashed previous run (e.g. under
+// Supervisor's autorestart).
+let xvfbProcess = null;
+async function ensureXvfb() {
+  if (process.env.DISPLAY) return process.env.DISPLAY;
+  if (xvfbProcess) return process.env.DISPLAY;
+  const display = `:${100 + Math.floor(Math.random() * 8900)}`;
+  xvfbProcess = spawn('Xvfb', [display, '-screen', '0', '1280x1024x24', '-nolisten', 'tcp'], { stdio: 'ignore' });
+  xvfbProcess.on('error', (error) => {
+    console.warn(`Xvfb failed to start (${error.message}) -- is the 'xvfb' package installed?`);
+  });
+  process.on('exit', () => xvfbProcess?.kill());
+  await new Promise((resolve) => setTimeout(resolve, 500)); // give it a moment to bind the display socket
+  process.env.DISPLAY = display;
+  return display;
+}
 
 // Serves the generated page over real local HTTP instead of injecting it
 // via page.setContent(), which leaves the document on about:blank. WebGPU
@@ -266,8 +294,9 @@ export class BrowserMiner {
   }
 
   async init() {
+    await ensureXvfb();
     this.browser = await puppeteer.launch({
-      headless: true,
+      headless: false, // real Chrome window on the virtual (Xvfb) display -- see the comment above ensureXvfb()
       args: [
         // Running as root in a container without a configured SUID
         // sandbox: standard, documented trade-off for headless Chrome in

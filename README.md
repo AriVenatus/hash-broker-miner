@@ -131,8 +131,18 @@ battle-tested in production by this site's real users, so `src/browserMiner.mjs`
 drives that instead of reimplementing GPU access.
 
 `npm run selftest` and `npm run bench` still work the same way and mean the
-same thing; they just launch a headless Chrome tab instead of talking to
-Dawn directly. `MINER_WORKGROUP_SIZE` / `MINER_WORKGROUPS` / `MINER_ITERATIONS`
+same thing; they just launch a Chrome tab instead of talking to Dawn
+directly. That tab isn't run in Chrome's *headless mode* specifically —
+headless-mode GPU support hit two different Vulkan/GPU-process edge cases
+in a row in testing (a `vkCreateInstance` extension failure, then a
+`CreateCommandBuffer` transient failure), each fixable with its own
+obscure flag. Rather than keep fighting headless-specific quirks one flag
+at a time, `src/browserMiner.mjs` runs Chrome normally on a virtual (Xvfb)
+display instead — the actually battle-tested pattern for GPU-accelerated
+Chrome in CI/Docker (what Chrome's own GPU test bots and most
+Puppeteer/Selenium GPU pipelines use). Nothing is visible to a human
+either way; "headless" in this README means "no GUI a person watches,"
+not literally Chrome's `--headless` flag. `MINER_WORKGROUP_SIZE` / `MINER_WORKGROUPS` / `MINER_ITERATIONS`
 still control batch shape (same defaults, matching the site's own browser
 miner) and are still worth bench-testing on your actual hardware before an
 unattended run — headless Chrome hasn't been proven crash-free at every
