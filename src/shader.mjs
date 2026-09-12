@@ -3,13 +3,22 @@
 // guaranteed to match what the on-chain contract verifies. Correctness is
 // checked against Node's own crypto module in scripts/selftest.mjs.
 
-// Same batch shape as the official site's own browser miner (miner.js) —
-// a size that's already proven stable in production, rather than a value
-// tuned up blindly. Bump WORKGROUPS/ITERATIONS if your GPU can clearly
-// handle more (watch scripts/selftest.mjs and the live hashrate first).
+// WORKGROUP_SIZE/WORKGROUPS match the official site's own browser miner
+// (miner.js). ITERATIONS is higher than the site's (128): on real GPU
+// hardware (confirmed on an RTX 4090 at ~977 MH/s) the site's batch size
+// means ~116 JS<->native dispatch round-trips per second, which was
+// observed to crash the `webgpu` package's native addon with a glibc
+// "Fatal glibc error: pthread_mutex_lock.c:94 ... assertion failed:
+// mutex->__data.__owner == 0" abort after some time mining — a threading
+// bug in the native binding under sustained high-frequency dispatch, not
+// in this shader. ITERATIONS is a sequential loop *inside* the shader, so
+// raising it does more work per dispatch without needing more GPU
+// parallelism — it cuts the native call rate roughly proportionally, for
+// free, in exchange for a (still tiny, sub-second at real hashrates)
+// increase in worst-case latency between finding a proof and reporting it.
 export const WORKGROUP_SIZE = 256;
 export const WORKGROUPS = 256;
-export const ITERATIONS = 128;
+export const ITERATIONS = 2048;
 export const HASHES_PER_BATCH = WORKGROUP_SIZE * WORKGROUPS * ITERATIONS;
 
 export function buildShader({ workgroupSize = WORKGROUP_SIZE, iterations = ITERATIONS } = {}) {

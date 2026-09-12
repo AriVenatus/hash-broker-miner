@@ -132,24 +132,35 @@ Batch shape (`MINER_WORKGROUP_SIZE` × `MINER_WORKGROUPS` × `MINER_ITERATIONS`
 hashes per GPU dispatch) defaults to the same numbers the live site's own
 browser miner uses. Override via env vars if needed.
 
-**Caveats from building this**: the sandbox this was developed in has no real
-GPU Vulkan driver registered (only Mesa's software Lavapipe/llvmpipe), and
-under that software backend, large dispatches intermittently crashed the
-Node process (`SIGSEGV`/`SIGABRT` from inside Dawn's native code) — not a bug
-in the mining logic itself (`npm run selftest` still passes: the hash
-algorithm is bit-for-bit correct), but a stability limitation of running
-WebGPU compute on a software rasterizer. On a real GPU with a proper
-Vulkan/Metal/D3D12 driver — which is what this is meant to run on — Dawn is
-the same production-grade engine Chrome ships, so this should not occur. If
-`npm run bench` ever crashes on your machine, lower `MINER_WORKGROUPS` /
-`MINER_ITERATIONS` first and check your GPU drivers second.
+**Caveats from building this** — none of these are bugs in the mining logic
+itself (`npm run selftest` always verifies the hash algorithm is bit-for-bit
+correct); they're stability limits of the `webgpu` (Dawn) Node native addon
+itself, observed directly while building this:
 
-Separately: two live Dawn instances open in the same Node process at once
-(e.g. the adapter-discovery probe plus a real mining device) were observed
-to abort the process (`std::system_error: Invalid argument`). That's why GPU
-discovery (`scripts/_probe-adapters.mjs`) runs as its own short-lived child
-process instead of in-process — its Dawn instance is fully gone by the time
-the real one is created. Don't merge that probe back into the main process.
+- **Software rasterizer instability.** The sandbox this was first developed
+  in has no real GPU Vulkan driver (only Mesa's software Lavapipe/llvmpipe),
+  and under that software backend, large dispatches intermittently crashed
+  the process (`SIGSEGV`/`SIGABRT`). Not expected on real GPU hardware.
+
+- **High dispatch-frequency abort, even on real hardware.** Confirmed live
+  on an RTX 4090 at ~977 MH/s: after mining for a while it crashed with
+  `Fatal glibc error: pthread_mutex_lock.c:94 ... assertion failed:
+  mutex->__data.__owner == 0` — a threading bug in the native addon that
+  shows up under sustained high-frequency dispatch (the site's original
+  batch size means ~116 JS↔native round-trips/second at that hashrate).
+  Fixed by raising `ITERATIONS` (default is now 2048, 16× the site's own
+  128) so each dispatch does far more work per round-trip — this only adds
+  sub-second latency between finding a proof and reporting it, negligible
+  against the multi-day expected wait at real difficulty levels. If you
+  still hit this, raise `MINER_ITERATIONS` further; `deploy/vast-onstart.sh`
+  already wraps `npm start` in an auto-restart loop as a safety net either way.
+
+- **Two live Dawn instances in one process.** The adapter-discovery probe
+  plus a real mining device open at once was observed to abort the process
+  (`std::system_error: Invalid argument`). That's why GPU discovery
+  (`scripts/_probe-adapters.mjs`) runs as its own short-lived child process
+  instead of in-process — its Dawn instance is fully gone by the time the
+  real one is created. Don't merge that probe back into the main process.
 
 ## Troubleshooting: `npm` fails with a UNC path / `cmd.exe` error
 

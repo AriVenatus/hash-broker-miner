@@ -163,5 +163,12 @@ export class GpuMiner {
     const next = BigInt(this.nonceLo) + BigInt(this.hashesPerBatch);
     this.nonceLo = Number(next & 0xffffffffn);
     this.nonceHi = (this.nonceHi + Number(next >> 32n)) >>> 0;
+
+    // The official browser miner.js yields here too (there, to avoid
+    // blocking the tab's UI thread). Keeping that yield gives the native
+    // addon's own worker threads a scheduling gap between dispatches
+    // instead of hammering it back-to-back — see the note in shader.mjs
+    // on the native pthread abort this combines with ITERATIONS to avoid.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
