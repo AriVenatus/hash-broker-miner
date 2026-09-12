@@ -8,7 +8,28 @@
 // by this site's real users, so we drive that instead of reimplementing
 // GPU access ourselves.
 import puppeteer from 'puppeteer';
+import { createServer } from 'node:http';
 import { buildShader, WORKGROUP_SIZE, WORKGROUPS, ITERATIONS } from './shader.mjs';
+
+// Serves the generated page over real local HTTP instead of injecting it
+// via page.setContent(), which leaves the document on about:blank. WebGPU
+// (like several modern browser APIs) requires a secure context, and
+// about:blank/setContent() pages are exactly the kind of edge case that
+// can behave unpredictably there -- serving from http://127.0.0.1 (always
+// treated as a secure context) removes that ambiguity entirely.
+function serveHtml(html) {
+  return new Promise((resolve, reject) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(html);
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      resolve({ server, url: `http://127.0.0.1:${port}/` });
+    });
+  });
+}
 
 function hexWords(hex, expectedWords) {
   const clean = hex.toLowerCase().replace(/^0x/, '');
@@ -248,8 +269,8 @@ export class BrowserMiner {
       args: [
         // Running as root in a container without a configured SUID
         // sandbox: standard, documented trade-off for headless Chrome in
-        // Docker. Mitigated by only ever loading our own local content
-        // via page.setContent() -- this page never navigates to a
+        // Docker. Mitigated by only ever serving our own local content
+        // (see serveHtml() above) -- this never navigates to a
         // remote/untrusted URL.
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -282,7 +303,9 @@ export class BrowserMiner {
       workgroups: this.workgroups,
       iterations: this.iterations
     });
-    await this.page.setContent(html, { waitUntil: 'load' });
+    const { server, url } = await serveHtml(html);
+    this._htmlServer = server;
+    await this.page.goto(url, { waitUntil: 'load' });
 
     try {
       const gpuName = await this.page.evaluate(() => window.__minerControl.init());
@@ -349,5 +372,6 @@ export class BrowserMiner {
 
   async close() {
     await this.browser?.close();
+    this._htmlServer?.close();
   }
 }
