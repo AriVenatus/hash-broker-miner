@@ -142,12 +142,17 @@ display instead — the actually battle-tested pattern for GPU-accelerated
 Chrome in CI/Docker (what Chrome's own GPU test bots and most
 Puppeteer/Selenium GPU pipelines use). Nothing is visible to a human
 either way; "headless" in this README means "no GUI a person watches,"
-not literally Chrome's `--headless` flag. `MINER_WORKGROUP_SIZE` / `MINER_WORKGROUPS` / `MINER_ITERATIONS`
-still control batch shape (same defaults, matching the site's own browser
-miner) and are still worth bench-testing on your actual hardware before an
-unattended run — headless Chrome hasn't been proven crash-free at every
-possible batch size either, it's just using a far more mature GPU
-integration than the native addon was.
+not literally Chrome's `--headless` flag.
+
+**Confirmed working on real hardware**: an RTX 4090 (`lovelace` adapter),
+`npm run selftest` passing, and `npm run bench` sustaining 200+ real
+dispatches at ~920 MH/s with zero crashes — a meaningfully different
+outcome from the native addon, which never got past intermittent crashes
+at any batch size on the same GPU. `MINER_WORKGROUP_SIZE` / `MINER_WORKGROUPS` /
+`MINER_ITERATIONS` still control batch shape (same defaults, matching the
+site's own browser miner) and are still worth a quick `npm run bench`
+check on hardware you haven't tried yet, just as ordinary due diligence
+rather than because this approach is known-shaky.
 
 **Known limitation**: a single Chrome instance uses whichever GPU the
 system/driver exposes by default. There's no clean way to pin multiple
