@@ -53,7 +53,14 @@ function verify({ currentHash, nonceLo, nonceHi }) {
 const gpuName = await miner.init();
 console.log('GPU (via headless Chrome):', gpuName);
 
-miner.setJob({ address, challenge, difficulty: 255 }); // effectively unreachable, so it never "finds" and always reports progress
+// difficulty 0 matches on the very first (only, since workgroups=
+// workgroupSize=iterations=1) hash unconditionally -- deterministic,
+// rather than relying on this specific random hash happening to improve
+// on a "best so far" that starts at 0 (a coin flip, since a hash whose
+// own leading-zero count is exactly 0 would otherwise never get written
+// to the GPU-side buffer this reads back -- see the shader.mjs comment
+// on the found-branch's unconditional bestHash write).
+miner.setJob({ address, challenge, difficulty: 0 });
 miner.start().catch((error) => {
   console.error('Error:', error.message);
   process.exit(1);

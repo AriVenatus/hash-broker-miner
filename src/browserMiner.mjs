@@ -11,6 +11,8 @@ import puppeteer from 'puppeteer';
 import { createServer } from 'node:http';
 import { buildShader, WORKGROUP_SIZE, WORKGROUPS, ITERATIONS } from './shader.mjs';
 
+const SOFTWARE_ADAPTER_PATTERN = /llvmpipe|swiftshader|software|basic render|lavapipe/i;
+
 // Serves the generated page over real local HTTP instead of injecting it
 // via page.setContent(), which leaves the document on about:blank. WebGPU
 // (like several modern browser APIs) requires a secure context, and
@@ -291,7 +293,11 @@ export class BrowserMiner {
     this._stderrLog = [];
     this.browser.process()?.stderr?.on('data', (chunk) => {
       this._stderrLog.push(chunk.toString());
-      if (this._stderrLog.length > 500) this._stderrLog.shift();
+      // Capture generously and filter for relevance only when actually
+      // displaying it (_buildDiagnostics) -- Chrome's verbose logging is
+      // chatty enough that a small cap risks evicting the one early
+      // Vulkan/GPU-process init line that actually matters.
+      if (this._stderrLog.length > 5000) this._stderrLog.shift();
     });
 
     this.page = await this.browser.newPage();
@@ -310,16 +316,31 @@ export class BrowserMiner {
     try {
       const gpuName = await this.page.evaluate(() => window.__minerControl.init());
       this.gpuName = gpuName;
+      if (SOFTWARE_ADAPTER_PATTERN.test(gpuName)) {
+        console.warn(
+          `[${this.label}] WARNING: "${gpuName}" is a software renderer, not real GPU hardware -- ` +
+          'mining will be extremely slow. Diagnostics follow (why Chrome didn\'t use the real GPU):'
+        );
+        console.warn(await this._buildDiagnostics());
+      }
       return gpuName;
     } catch (error) {
-      const diagnosis = await diagnoseGpu(this.browser);
-      const stderrTail = this._stderrLog.join('').split('\n').slice(-60).join('\n');
-      throw new Error(
-        `${error.message}\n` +
-        `--- chrome stderr (tail) ---\n${stderrTail || '(empty)'}\n` +
-        `--- chrome://gpu diagnostics ---\n${diagnosis}`
-      );
+      throw new Error(`${error.message}\n${await this._buildDiagnostics()}`);
     }
+  }
+
+  async _buildDiagnostics() {
+    const diagnosis = await diagnoseGpu(this.browser);
+    const relevant = this._stderrLog
+      .join('')
+      .split('\n')
+      .filter((line) => /vulkan|angle|swiftshader|webgpu|dawn|gpu process|error|fail/i.test(line))
+      .slice(-80)
+      .join('\n');
+    return (
+      `--- chrome stderr (GPU/Vulkan/ANGLE-relevant lines) ---\n${relevant || '(none matched)'}\n` +
+      `--- chrome://gpu diagnostics ---\n${diagnosis}`
+    );
   }
 
   _onReport(type, payload) {

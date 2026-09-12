@@ -139,6 +139,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       if (previous == 0u) {
         atomicStore(&result.nonceLo, nonceLo);
         atomicStore(&result.nonceHi, nonceHi);
+        // Unconditional, unlike the bestHash write above: that one only
+        // fires when bits > previousBest, so whenever the winning hash's
+        // own leading-zero count doesn't happen to exceed whatever was
+        // already recorded (e.g. the very first hash checked, when
+        // previousBest starts at 0 and this hash's bits is also 0),
+        // bestHash would otherwise never reflect the actual winning hash.
+        // Harmless to mining itself either way -- bestHash isn't used for
+        // the found/nonce decision -- but load-bearing for
+        // scripts/selftest.mjs, which verifies against this value.
+        for (var word = 0u; word < 8u; word = word + 1u) {
+          atomicStore(&result.bestHash[word], hash[word]);
+        }
       }
       return;
     }
