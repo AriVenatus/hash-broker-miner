@@ -67,13 +67,17 @@ The native `webgpu` (Dawn) Node addon has been observed to crash under
 certain dispatch sizes/frequencies even on real hardware (see the main
 README's caveats section) — this seems to depend on the specific GPU, so
 it's worth bench-testing on the instance itself before trusting an
-unattended run:
+unattended run. **Known so far on one RTX 4090**: `ITERATIONS=128` (the
+current default) ran but eventually hit a threading-related abort;
+`ITERATIONS=2048` crashed immediately and repeatably — so don't jump
+straight to a large value, step up gradually instead:
 
 ```bash
 cd /root/hash-broker-miner
-MINER_ITERATIONS=128  BENCH_BATCHES=200 npm run bench
-MINER_ITERATIONS=512  BENCH_BATCHES=200 npm run bench
-MINER_ITERATIONS=2048 BENCH_BATCHES=200 npm run bench
+MINER_ITERATIONS=128 BENCH_BATCHES=200 npm run bench
+MINER_ITERATIONS=256 BENCH_BATCHES=200 npm run bench
+MINER_ITERATIONS=512 BENCH_BATCHES=200 npm run bench
+# only keep going up if the previous value ran clean
 ```
 
 Each runs 200 real dispatches per GPU at a difficulty high enough that it
@@ -82,6 +86,9 @@ stability signal, not just one). Whichever value survives all 200 without
 crashing, set `MINER_ITERATIONS=<value>` in the instance's Env Vars and
 restart the miner (`supervisorctl restart hash-broker-miner`) — Supervisor
 programs inherit the container's env vars, so no need to edit the conf file.
+If even 128 doesn't survive 200 batches, don't keep raising it — that's the
+unresolved threading bug, not a size problem, and the `autorestart` in
+Supervisor is the mitigation for now, not a bigger batch size.
 
 ## Updating
 

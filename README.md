@@ -142,18 +142,22 @@ itself, observed directly while building this:
   and under that software backend, large dispatches intermittently crashed
   the process (`SIGSEGV`/`SIGABRT`). Not expected on real GPU hardware.
 
-- **High dispatch-frequency abort, even on real hardware.** Confirmed live
-  on an RTX 4090 at ~977 MH/s: after mining for a while it crashed with
+- **Native addon crashes on real hardware too, unresolved.** Confirmed live
+  on an RTX 4090 at ~977 MH/s: after mining for a while at the site's own
+  batch size (`ITERATIONS=128`), it aborted with
   `Fatal glibc error: pthread_mutex_lock.c:94 ... assertion failed:
-  mutex->__data.__owner == 0` — a threading bug in the native addon that
-  shows up under sustained high-frequency dispatch (the site's original
-  batch size means ~116 JS↔native round-trips/second at that hashrate).
-  Fixed by raising `ITERATIONS` (default is now 2048, 16× the site's own
-  128) so each dispatch does far more work per round-trip — this only adds
-  sub-second latency between finding a proof and reporting it, negligible
-  against the multi-day expected wait at real difficulty levels. If you
-  still hit this, raise `MINER_ITERATIONS` further; `deploy/vast-onstart.sh`
-  already wraps `npm start` in an auto-restart loop as a safety net either way.
+  mutex->__data.__owner == 0` — looked like a threading bug tied to
+  sustained high-frequency dispatch (~116 JS↔native round-trips/second at
+  that hashrate). The fix tried was raising `ITERATIONS` to 2048 so each
+  dispatch does more work per round-trip — but that instead crashed
+  (plain `Segmentation fault`) on the very *first* dispatch, immediately
+  and repeatably, which rules out the frequency theory and points at a
+  different, apparently harder failure mode with larger dispatches. The
+  default is back to the site's own proven `ITERATIONS=128` pending real
+  bench data. **This is not resolved yet** — see `deploy/README.md`'s
+  "Tuning the batch size" section to bench-test values on your own GPU,
+  and rely on `deploy/vast-onstart.sh`'s Supervisor `autorestart` as the
+  safety net regardless of what you find.
 
 - **Two live Dawn instances in one process.** The adapter-discovery probe
   plus a real mining device open at once was observed to abort the process
