@@ -47,10 +47,18 @@ export class GpuMiner {
     const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) throw new Error(`[${this.label}] No compatible GPU adapter was found (Dawn/WebGPU).`);
     this.device = await adapter.requestDevice();
-    this.device.lost.then((info) => {
-      this.running = false;
-      this.callbacks.onError?.(new Error(`GPU device lost: ${info.message || info.reason}`));
-    });
+    // NOTE: a `device.lost.then(...)` handler used to be registered here.
+    // It was removed as the prime suspect for a native crash (mutex
+    // assertion / segfault / "std::system_error: Invalid argument" —
+    // classic native-thread-API misuse symptoms) reproduced on a real
+    // RTX 4090 even at the smallest possible dispatch, while
+    // scripts/selftest.mjs's raw script — which never touches
+    // `device.lost` — never crashed. Bridging a *real* GPU driver's
+    // device-loss event back into JS plausibly needs native background
+    // thread/callback machinery that a software adapter (where this
+    // never crashed) never actually exercises. If device-loss detection
+    // is needed again, don't re-add a `.then()` here without confirming
+    // this addon's `device.lost` implementation is actually safe first.
 
     const module = this.device.createShaderModule({
       code: buildShader({ workgroupSize: this.workgroupSize, iterations: this.iterations })
