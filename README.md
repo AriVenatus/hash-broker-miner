@@ -51,6 +51,9 @@ npm start          # mines continuously until Ctrl+C or the 4,444 supply cap
 (Prefer to do it by hand instead of running `setup.sh`? `npm install`, then
 `cp .env.example .env` and edit in your `PRIVATE_KEY`, then `npm run selftest`.)
 
+**Deploying to a rented GPU (vast.ai, etc.)?** See [`deploy/README.md`](deploy/README.md)
+for a private-repo-friendly on-start script instead of an interactive setup.
+
 ## What `npm start` does
 
 1. Detects every GPU on the machine (see "GPU detection & multi-GPU" below)

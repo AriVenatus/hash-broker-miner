@@ -102,14 +102,20 @@ if [ ! -f .env ]; then
   info "Created .env from .env.example."
 fi
 
+# A real environment variable (e.g. set by vast.ai's instance "Env Vars"
+# field) takes priority over .env and needs no file at all — dotenv never
+# overrides an already-set process.env value, so chain.mjs picks it up
+# either way. Only fall back to the .env file / prompts if it's absent.
 HAS_VALID_KEY=0
-if grep -qE '^PRIVATE_KEY=0x[0-9a-fA-F]{64}$' .env 2>/dev/null; then
+if [ -n "${PRIVATE_KEY:-}" ] && [[ "$PRIVATE_KEY" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+  info "PRIVATE_KEY already set via environment variable — skipping .env wallet setup."
+  HAS_VALID_KEY=1
+elif grep -qE '^PRIVATE_KEY=0x[0-9a-fA-F]{64}$' .env 2>/dev/null; then
+  info ".env already has a PRIVATE_KEY set — leaving it alone."
   HAS_VALID_KEY=1
 fi
 
-if [ "$HAS_VALID_KEY" -eq 1 ]; then
-  info ".env already has a PRIVATE_KEY set — leaving it alone."
-else
+if [ "$HAS_VALID_KEY" -eq 0 ]; then
   DO_GENERATE=0
   if [ "$GENERATE_WALLET" -eq 1 ]; then
     DO_GENERATE=1
@@ -151,7 +157,7 @@ else
     fi
     unset PASTED_KEY
   else
-    warn "No PRIVATE_KEY set and running non-interactively — edit .env manually before running \"npm start\"."
+    warn "No PRIVATE_KEY set and running non-interactively — set it as an env var or edit .env manually before running \"npm start\"."
   fi
 fi
 
