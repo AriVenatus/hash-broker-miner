@@ -206,17 +206,26 @@ async function diagnoseGpu(browser) {
   let page;
   try {
     page = await browser.newPage();
-    await page.goto('chrome://gpu', { waitUntil: 'networkidle0', timeout: 15000 });
+    const response = await page.goto('chrome://gpu', { waitUntil: 'load', timeout: 15000 });
     // chrome://gpu's exact markup/CSS classes vary by Chrome version, but the
     // visible text of the feature-status list and any "Problems Detected"
-    // section is stable enough to just grep out of the page's full text.
+    // section is stable enough to just grep out of the page's full text --
+    // when that works. If it doesn't, dump enough raw text/metadata to see
+    // *why* instead of reporting "nothing found" with no way to tell if the
+    // page loaded at all.
     const text = await page.evaluate(() => document.body.innerText || '');
     const relevantLines = text
       .split('\n')
       .map((line) => line.trim())
-      .filter((line) => /webgpu|vulkan|gpu process|problems detected|disabled/i.test(line))
+      .filter((line) => /webgpu|vulkan|gpu process|problems detected|disabled|feature status/i.test(line))
       .slice(0, 25);
-    return relevantLines.length ? relevantLines.join('\n') : '(no WebGPU/Vulkan/GPU-process lines found on chrome://gpu)';
+    if (relevantLines.length) return relevantLines.join('\n');
+    const status = response ? response.status() : 'null response';
+    const trimmed = text.trim();
+    return (
+      `(no matching lines; chrome://gpu response status=${status}, body text length=${text.length})\n` +
+      (trimmed ? trimmed.slice(0, 2000) : '(page body text was empty)')
+    );
   } catch (error) {
     return `(could not load chrome://gpu for diagnostics: ${error.message})`;
   } finally {
@@ -249,9 +258,21 @@ export class BrowserMiner {
         '--use-angle=vulkan',
         '--use-gl=angle',
         '--ignore-gpu-blocklist',
-        '--disable-gpu-sandbox'
+        '--disable-gpu-sandbox',
+        '--enable-logging=stderr',
+        '--v=1'
       ]
     });
+    // Chrome logs GPU/Vulkan/ANGLE initialization failures to its own
+    // stderr on startup, often more directly than chrome://gpu's rendered
+    // status page does. Buffer it (capped) so a failed init() can include
+    // the tail of it instead of just chrome://gpu's summary.
+    this._stderrLog = [];
+    this.browser.process()?.stderr?.on('data', (chunk) => {
+      this._stderrLog.push(chunk.toString());
+      if (this._stderrLog.length > 500) this._stderrLog.shift();
+    });
+
     this.page = await this.browser.newPage();
     this.page.on('pageerror', (error) => this.callbacks.onError?.(new Error(`[${this.label}] page error: ${error.message}`)));
     await this.page.exposeFunction('__report', (type, payload) => this._onReport(type, payload));
@@ -269,7 +290,12 @@ export class BrowserMiner {
       return gpuName;
     } catch (error) {
       const diagnosis = await diagnoseGpu(this.browser);
-      throw new Error(`${error.message}\n--- chrome://gpu diagnostics ---\n${diagnosis}`);
+      const stderrTail = this._stderrLog.join('').split('\n').slice(-60).join('\n');
+      throw new Error(
+        `${error.message}\n` +
+        `--- chrome stderr (tail) ---\n${stderrTail || '(empty)'}\n` +
+        `--- chrome://gpu diagnostics ---\n${diagnosis}`
+      );
     }
   }
 
