@@ -128,6 +128,7 @@ async function main() {
     }
   }
 
+  await Promise.all(pool.map(({ miner }) => miner.close?.().catch(() => {})));
   console.log(`Stopped. Minted ${mintedThisSession} broker(s) this session.`);
   process.exit(0);
 }

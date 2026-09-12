@@ -66,6 +66,11 @@ stdout_logfile=${DEPLOY_DIR}/miner.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
 redirect_stderr=true
+; HOME must be set explicitly: Puppeteer looks under \$HOME/.cache/puppeteer
+; for the Chrome build setup.sh already downloaded there as root, and
+; Supervisor's own child-process environment isn't guaranteed to match an
+; interactive root shell's.
+environment=HOME="${HOME:-/root}"
 EOF
 
 supervisorctl reread

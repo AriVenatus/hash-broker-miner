@@ -1,40 +1,22 @@
-// Owns one GpuMiner per physical GPU and runs them all against the same
-// mining job concurrently — whichever one finds a valid proof first wins.
-import { GpuMiner } from './gpuMiner.mjs';
-import { listAdapters, chooseAdapters } from './gpuDiscovery.mjs';
+// Owns one BrowserMiner (headless Chrome instance) and runs it against
+// the current mining job. Previously this discovered and pooled one
+// native GpuMiner per physical GPU adapter -- that approach was dropped
+// after repeated, distinct native crashes on real hardware (see README's
+// caveats section). A single headless Chrome instance uses whatever GPU
+// the system/driver exposes by default; there's no clean way to pin
+// multiple Chrome instances to different physical GPUs, so multi-GPU
+// support is out of scope for now. mineWithPool() below still operates
+// on a generic list of {label, miner} entries, so it works unchanged
+// whether that list has one entry or (in the future) several.
+import { BrowserMiner } from './browserMiner.mjs';
 
 export async function buildPool(log = console.log) {
-  let adapters = null;
-  try {
-    adapters = await listAdapters();
-  } catch (error) {
-    log(`Adapter discovery failed (${error.message}); falling back to the default adapter.`);
-  }
-
-  let selections = chooseAdapters(adapters, { log });
-  const maxGpus = Number(process.env.MINER_MAX_GPUS || 0);
-  if (maxGpus > 0 && selections.length > maxGpus) {
-    log(`MINER_MAX_GPUS=${maxGpus}: using the first ${maxGpus} of ${selections.length} selected adapter(s).`);
-    selections = selections.slice(0, maxGpus);
-  }
-
-  const entries = [];
-  for (let i = 0; i < selections.length; i++) {
-    const sel = selections[i];
-    const label = `GPU ${i}`;
-    const miner = new GpuMiner({}, { backend: sel.backend, adapterName: sel.name, label });
-    try {
-      const gpuName = await miner.init();
-      log(`[${label}] ready: ${gpuName}`);
-      entries.push({ label, miner });
-    } catch (error) {
-      log(`[${label}] failed to initialize (${error.message}); skipping it.`);
-    }
-  }
-
-  if (entries.length === 0) throw new Error('No usable GPU adapter could be initialized.');
-  log(`Mining pool ready: ${entries.length} device(s).\n`);
-  return entries;
+  const label = 'GPU 0';
+  const miner = new BrowserMiner({}, { label });
+  const gpuName = await miner.init();
+  log(`[${label}] ready: ${gpuName}`);
+  log('Mining pool ready: 1 device (headless Chrome).\n');
+  return [{ label, miner }];
 }
 
 // Runs `job` on every entry in the pool concurrently until one finds a
@@ -66,6 +48,7 @@ export function mineWithPool(entries, provider, job, { readState, pollMs, onStat
         onError: (error) => {
           onStatus?.(perGpu, job, `[${entry.label}] error: ${error.message} — dropping this GPU from the pool.`);
           entry.miner.stop();
+          entry.miner.close?.().catch(() => {});
           const index = entries.indexOf(entry);
           if (index !== -1) entries.splice(index, 1);
           if (entries.length === 0) finish({ status: 'error', error });

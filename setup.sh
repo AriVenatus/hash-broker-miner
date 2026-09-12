@@ -72,12 +72,46 @@ elif [ -z "$NPM_PATH" ]; then
   exit 1
 fi
 info "Using: $NPM_CMD"
+NPX_CMD="${NPM_CMD/npm/npx}"
 
 # ---------------------------------------------------------------------------
 # 3. Install dependencies
 # ---------------------------------------------------------------------------
 info "Installing dependencies..."
 $NPM_CMD install
+
+# ---------------------------------------------------------------------------
+# 3b. Headless Chrome: system shared libraries + the actual browser binary
+# ---------------------------------------------------------------------------
+# npm's install-scripts safety gate blocks puppeteer's own postinstall
+# (which normally downloads Chrome) unless explicitly approved, and that
+# approval doesn't retroactively run a skipped script either — so this is
+# done explicitly and unconditionally rather than relied on implicitly.
+if command -v apt-get >/dev/null 2>&1; then
+  CHROME_DEPS="ca-certificates fonts-liberation libasound2t64 libatk-bridge2.0-0 \
+    libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 \
+    libgbm1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 \
+    libpangocairo-1.0-0 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 \
+    libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 \
+    libxtst6 lsb-release wget xdg-utils"
+  info "Installing headless Chrome's system library dependencies..."
+  if [ "$(id -u)" -eq 0 ]; then
+    apt-get update -qq && apt-get install -y -qq $CHROME_DEPS \
+      || warn "apt install failed — if Chrome fails to launch with a 'shared libraries' error, install these packages yourself: $CHROME_DEPS"
+  elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq $CHROME_DEPS \
+      || warn "apt install failed — if Chrome fails to launch with a 'shared libraries' error, install these packages yourself: $CHROME_DEPS"
+  else
+    warn "Not root and no passwordless sudo available — skipping apt install. If Chrome fails to launch"
+    warn "with a 'shared libraries' error, install these packages yourself (with sudo): $CHROME_DEPS"
+  fi
+else
+  warn "apt-get not found (non-Debian system?) — make sure Chrome's shared library dependencies are"
+  warn "installed some other way if 'npm run selftest' fails with a 'shared libraries' error."
+fi
+
+info "Downloading the Chrome build Puppeteer needs (skips if already cached)..."
+$NPX_CMD puppeteer browsers install chrome
 
 # ---------------------------------------------------------------------------
 # 4. GPU sanity check (informational only — the app does its own detection)
@@ -89,8 +123,9 @@ fi
 if [ -d /usr/share/vulkan/icd.d ]; then
   HARDWARE_ICDS="$(ls /usr/share/vulkan/icd.d 2>/dev/null | grep -viE 'lvp|llvmpipe|swiftshader|gfxstream|virtio' || true)"
   if [ -z "$HARDWARE_ICDS" ]; then
-    warn "No hardware Vulkan ICD found under /usr/share/vulkan/icd.d — mining may fall back to a slow, less stable software GPU."
-    warn "Install your GPU vendor's Vulkan driver package for real hardware acceleration."
+    warn "No hardware Vulkan ICD found under /usr/share/vulkan/icd.d — headless Chrome's WebGPU may fall"
+    warn "back to a slow, less stable software GPU. Install your GPU vendor's Vulkan driver package for"
+    warn "real hardware acceleration."
   fi
 fi
 

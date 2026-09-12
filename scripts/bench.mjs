@@ -55,4 +55,5 @@ await Promise.all(
 
 console.log(`\n${done.size}/${pool.length} GPU(s) completed without crashing.`);
 console.log('If the hashrates above look sane for your hardware, you\'re good to run "npm start".');
+await Promise.all(pool.map(({ miner }) => miner.close().catch(() => {})));
 process.exit(done.size === pool.length ? 0 : 1);

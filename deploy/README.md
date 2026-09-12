@@ -21,10 +21,10 @@ ssh-keygen -t ed25519 -N "" -f ./hash-broker-deploy-key -C "vast.ai deploy key"
 
 ## 2. Create the instance
 
-- Image: `vastai/base-image`, tag `stock-ubuntu24.04-<latest date>` (see
-  the [main README](../README.md#gpu-detection--multi-gpu) for why this
-  template specifically — it has Vulkan + `NVIDIA_DRIVER_CAPABILITIES=all`
-  baked in already).
+- Image: `vastai/base-image`, tag `stock-ubuntu24.04-<latest date>` — its
+  Dockerfile sets `NVIDIA_DRIVER_CAPABILITIES=all` and installs Vulkan
+  runtime/tools unconditionally, which is what headless Chrome's WebGPU
+  needs to reach the real GPU instead of falling back to a software one.
 - Env Vars (vast.ai console -> instance config):
   - `PRIVATE_KEY` = your mining wallet's private key (`0x` + 64 hex chars)
   - `DEPLOY_KEY` = the full contents of `hash-broker-deploy-key` (the
@@ -44,12 +44,12 @@ supervisorctl status hash-broker-miner   # RUNNING, and check the uptime
 tail -f /root/hash-broker-miner/miner.log
 ```
 
-You should see the GPU discovery log, then per-round challenge/hashrate
-lines. If it instead shows a software-adapter warning, or `supervisorctl
-status` shows it flapping between STARTING/BACKOFF/FATAL, stop and
-bench-test it first (see "Tuning the batch size" below) — don't leave it
-mining unattended until that looks stable (see the main README's "Tuning /
-hardware notes" for what a healthy vs. broken GPU backend looks like).
+You should see `GPU (via headless Chrome): <your GPU's name>`, then
+per-round challenge/hashrate lines. If the GPU name looks like a software
+renderer (`llvmpipe`, `SwiftShader`, etc.), or `supervisorctl status` shows
+it flapping between STARTING/BACKOFF/FATAL, stop and bench-test it first
+(see "Tuning the batch size" below) — don't leave it mining unattended
+until that looks stable.
 
 **Why Supervisor and not a background `nohup` job**: the first version of
 this script backgrounded `npm start` in a `while true` restart loop with
@@ -63,32 +63,27 @@ survives what a background job doesn't.
 
 ## Tuning the batch size for your GPU
 
-The native `webgpu` (Dawn) Node addon has been observed to crash under
-certain dispatch sizes/frequencies even on real hardware (see the main
-README's caveats section) — this seems to depend on the specific GPU, so
-it's worth bench-testing on the instance itself before trusting an
-unattended run. **Known so far on one RTX 4090**: `ITERATIONS=128` (the
-current default) ran but eventually hit a threading-related abort;
-`ITERATIONS=2048` crashed immediately and repeatably — so don't jump
-straight to a large value, step up gradually instead:
+The miner runs through headless Chrome now (see the main README's "Why
+headless Chrome" section for why — a native Node GPU binding was tried
+first and produced repeated, unresolvable crashes on real hardware).
+Chrome's WebGPU is far more battle-tested than that binding was, but it's
+still worth bench-testing your actual instance before trusting an
+unattended run, since batch size vs. GPU/driver combinations are always
+worth verifying rather than assuming:
 
 ```bash
 cd /root/hash-broker-miner
-MINER_ITERATIONS=128 BENCH_BATCHES=200 npm run bench
-MINER_ITERATIONS=256 BENCH_BATCHES=200 npm run bench
-MINER_ITERATIONS=512 BENCH_BATCHES=200 npm run bench
-# only keep going up if the previous value ran clean
+BENCH_BATCHES=200 npm run bench                    # the default batch size (matches the site's own)
+MINER_ITERATIONS=512 BENCH_BATCHES=200 npm run bench  # try larger if the default looks stable and you want more throughput per dispatch
 ```
 
-Each runs 200 real dispatches per GPU at a difficulty high enough that it
-won't get "found" early (so you actually get 200 dispatches' worth of
-stability signal, not just one). Whichever value survives all 200 without
-crashing, set `MINER_ITERATIONS=<value>` in the instance's Env Vars and
-restart the miner (`supervisorctl restart hash-broker-miner`) — Supervisor
-programs inherit the container's env vars, so no need to edit the conf file.
-If even 128 doesn't survive 200 batches, don't keep raising it — that's the
-unresolved threading bug, not a size problem, and the `autorestart` in
-Supervisor is the mitigation for now, not a bigger batch size.
+Each runs 200 real dispatches at a difficulty high enough that it won't get
+"found" early (so you actually get 200 dispatches' worth of stability
+signal, not just one). If a value runs clean, set `MINER_ITERATIONS=<value>`
+in the instance's Env Vars and restart the miner (`supervisorctl restart
+hash-broker-miner`) — Supervisor programs inherit the container's env vars,
+so no need to edit the conf file. `autorestart` is still there as a safety
+net regardless of what you find.
 
 ## Updating
 

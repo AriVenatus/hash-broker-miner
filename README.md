@@ -3,9 +3,10 @@
 Standalone Node.js miner for [hashbroker.fun](https://www.hashbroker.fun/), a
 proof-of-work NFT mint on Robinhood Chain (chain id 4663). This isn't scraping
 or gaming anything: the site's own front-end runs a WebGPU brute-forcer in the
-browser and mints on-chain — this script does the exact same computation and
-submission outside the browser, GPU-accelerated via [Dawn](https://dawn.googlesource.com/dawn)
-(the same WebGPU engine Chrome uses) through the `webgpu` npm package.
+browser and mints on-chain — this drives a **headless Chrome instance
+(via Puppeteer)** running that exact same mining algorithm, and handles the
+chain reads/mint transaction from Node. Headless Chrome, not a standalone
+Node GPU binding, is deliberate — see "Why headless Chrome" below.
 
 The mining rule: find a `nonce` such that
 `SHA256(yourAddress ‖ zero-pad ‖ nonce ‖ currentChallenge)` has at least
@@ -56,20 +57,25 @@ for a private-repo-friendly on-start script instead of an interactive setup.
 
 ## What `npm start` does
 
-1. Detects every GPU on the machine (see "GPU detection & multi-GPU" below)
-   and initializes one miner per device, printing what it found.
+1. Launches a headless Chrome instance and initializes WebGPU in it,
+   printing the GPU it found (see "Why headless Chrome" below).
 2. Reads `totalSupply`, `mintPrice`, `currentDifficulty` and `challenge`
    straight from the contract.
-3. Runs the GPU search against your wallet address + that challenge, on
-   every detected GPU at once — whichever one finds a valid proof first
-   wins that round.
-4. Every 8s it polls the chain; if the challenge or difficulty changed (i.e.
-   someone else won that round) it abandons the stale job on every GPU and
-   restarts them on the new one instead of wasting time.
+3. Runs the GPU search against your wallet address + that challenge.
+4. Every 8s it polls the chain; if the challenge or difficulty changed
+   (i.e. someone else won that round) it abandons the stale job and
+   restarts on the new one instead of wasting time.
 5. On a found proof, re-reads the current price (it can have stepped up)
    and submits the mint transaction, waits for the receipt, and loops.
 6. Stops itself once `totalSupply` reaches 4,444, or on Ctrl+C (finishes the
    in-flight batch first).
+
+First run: `setup.sh` also downloads a Chrome build for Puppeteer and (on
+Debian/Ubuntu, as root or with passwordless sudo — true by default on a
+fresh vast.ai instance) installs the shared libraries headless Chrome needs.
+On any other setup, if `npm run selftest` fails with a `shared libraries`
+error, install those packages yourself — the exact list `setup.sh` tries is
+in its own source, right where that step happens.
 
 Example output:
 
@@ -78,93 +84,66 @@ Wallet:   0xAbC...123
 Balance:  0.05 ETH (gas token on https://rpc.mainnet.chain.robinhood.com/)
 Contract: 0x4272D6f51771839F596082eF48fa84D35239Bab3 (chain 4663)
 
-Detecting GPUs...
-Found 2 WebGPU adapter(s) on this system:
-  - backend=vulkan name="NVIDIA GeForce RTX 4090"
-  - backend=vulkan name="NVIDIA GeForce RTX 3080"
-[GPU 0] ready: NVIDIA GeForce RTX 4090
-[GPU 1] ready: NVIDIA GeForce RTX 3080
-Mining pool ready: 2 device(s).
+GPU (via headless Chrome): NVIDIA GeForce RTX 4090
+Mining pool ready: 1 device (headless Chrome).
 
-Challenge 0xeb00af47e587… | difficulty 50 bits | price 0.0001 ETH | supply 220/4444 | pool: GPU 0, GPU 1
-  GPU 0 412.3 MH/s | GPU 1 268.1 MH/s | total 680.4 MH/s | best 41/50 bits | 8,589,934,592 hashes | expected wait 26.4m
+Challenge 0xeb00af47e587… | difficulty 50 bits | price 0.0001 ETH | supply 220/4444 | pool: GPU 0
+  GPU 0 412.3 MH/s | total 412.3 MH/s | best 41/50 bits | 8,589,934,592 hashes | expected wait 43.7m
   [GPU 0] found a proof (nonce 8817281919123). Submitting mint transaction...
   Minted! tx 0xdead...beef (session total: 1)
 ```
 
-## GPU detection & multi-GPU
+## Why headless Chrome (and not a native Node GPU binding)
 
-On startup (and in `npm run bench`), `src/gpuDiscovery.mjs` asks Dawn for
-every adapter it can see — across whatever backends your platform supports
-(`vulkan` on Linux, `metal` on macOS, `d3d12` on Windows) — and:
+This started out using the `webgpu` npm package (Dawn's native Node
+bindings) to talk to the GPU directly from Node, without a browser. That
+approach was abandoned after extensive real-hardware debugging — the full
+incident record, kept because whoever touches this next should know not to
+re-attempt it without reading this first:
 
-- drops adapters that look like a software/CPU fallback (`llvmpipe`,
-  `lavapipe`, `swiftshader`, etc.) whenever at least one real GPU is present
-- drops duplicate `(backend, name)` entries, since this WebGPU binding
-  selects an adapter by name string and can't tell two identically-named
-  entries apart
-- spins up one `GpuMiner` per remaining adapter, each pinned to that device,
-  and mines every job on all of them concurrently
+- On an RTX 4090, it ran fine briefly then aborted with a glibc
+  `pthread_mutex_lock` assertion — looked like a threading bug under
+  sustained high-frequency dispatch.
+- Raising the batch size to reduce dispatch frequency (the seemingly
+  reasonable fix) instead caused an immediate, repeatable `Segmentation
+  fault` on the very first dispatch — a different, harder failure mode,
+  which ruled out the frequency theory entirely.
+- Pinning `webgpu` to a 6-months-mature version (`0.4.0`, vs. the `0.6.1`
+  that had shipped hours before the crashes started) made no difference —
+  same immediate crash.
+- Removing a `device.lost` handler (a plausible source of native
+  thread/callback machinery) made no difference.
+- Removing GPU-adapter-selection-by-name (`adapter=<name>`, passed as a
+  literal argument to Dawn's `create()`) made no difference.
+- The crash reproduced even at the smallest possible dispatch
+  (`workgroupSize=1, workgroups=1, iterations=1`, a single batch) run
+  through the same class structure that always crashed — while an
+  equivalent raw one-off script, with no class/callback indirection at
+  all, never crashed once, on the same GPU, across the whole investigation.
 
-**Known limitation**: if you have two or more *identical* GPU models (a
-common case for dedicated mining rigs), Dawn may report them with the exact
-same name string, and this package only exposes name-based adapter
-selection (no PCI/bus-id or index selector) — see the `adapter=` option in
-`node_modules/webgpu/README.md`. When that happens this tool logs a
-"skipping duplicate" warning and only mines on one of them, rather than
-silently double-mining the same physical card under two different labels.
-If your setup hits this, check whether a newer version of the `webgpu`
-package exposes index-based selection.
+That last point is the key one: the actual WebGPU calls being made were
+identical in both cases. The only difference was the JS structure around
+them (a class with async `init()`/`setJob()`/`start()` methods vs. a flat
+top-level script). That points at something in the native addon's
+Node.js/event-loop integration itself — not at anything tunable from
+userland. Chrome's own WebGPU implementation is the one actually
+battle-tested in production by this site's real users, so `src/browserMiner.mjs`
+drives that instead of reimplementing GPU access.
 
-Override the pool with:
+`npm run selftest` and `npm run bench` still work the same way and mean the
+same thing; they just launch a headless Chrome tab instead of talking to
+Dawn directly. `MINER_WORKGROUP_SIZE` / `MINER_WORKGROUPS` / `MINER_ITERATIONS`
+still control batch shape (same defaults, matching the site's own browser
+miner) and are still worth bench-testing on your actual hardware before an
+unattended run — headless Chrome hasn't been proven crash-free at every
+possible batch size either, it's just using a far more mature GPU
+integration than the native addon was.
 
-- `MINER_MAX_GPUS=1` — cap how many detected GPUs are actually used
-- `MINER_WORKGROUP_SIZE` / `MINER_WORKGROUPS` / `MINER_ITERATIONS` — batch
-  shape per GPU (same knobs as before, applied to every device in the pool)
-
-If discovery can't parse an adapter list at all (unexpected Dawn output),
-it logs that and falls back to Dawn's own default single-adapter selection
-rather than failing outright.
-
-## Tuning / hardware notes
-
-Batch shape (`MINER_WORKGROUP_SIZE` × `MINER_WORKGROUPS` × `MINER_ITERATIONS`
-hashes per GPU dispatch) defaults to the same numbers the live site's own
-browser miner uses. Override via env vars if needed.
-
-**Caveats from building this** — none of these are bugs in the mining logic
-itself (`npm run selftest` always verifies the hash algorithm is bit-for-bit
-correct); they're stability limits of the `webgpu` (Dawn) Node native addon
-itself, observed directly while building this:
-
-- **Software rasterizer instability.** The sandbox this was first developed
-  in has no real GPU Vulkan driver (only Mesa's software Lavapipe/llvmpipe),
-  and under that software backend, large dispatches intermittently crashed
-  the process (`SIGSEGV`/`SIGABRT`). Not expected on real GPU hardware.
-
-- **Native addon crashes on real hardware too, unresolved.** Confirmed live
-  on an RTX 4090 at ~977 MH/s: after mining for a while at the site's own
-  batch size (`ITERATIONS=128`), it aborted with
-  `Fatal glibc error: pthread_mutex_lock.c:94 ... assertion failed:
-  mutex->__data.__owner == 0` — looked like a threading bug tied to
-  sustained high-frequency dispatch (~116 JS↔native round-trips/second at
-  that hashrate). The fix tried was raising `ITERATIONS` to 2048 so each
-  dispatch does more work per round-trip — but that instead crashed
-  (plain `Segmentation fault`) on the very *first* dispatch, immediately
-  and repeatably, which rules out the frequency theory and points at a
-  different, apparently harder failure mode with larger dispatches. The
-  default is back to the site's own proven `ITERATIONS=128` pending real
-  bench data. **This is not resolved yet** — see `deploy/README.md`'s
-  "Tuning the batch size" section to bench-test values on your own GPU,
-  and rely on `deploy/vast-onstart.sh`'s Supervisor `autorestart` as the
-  safety net regardless of what you find.
-
-- **Two live Dawn instances in one process.** The adapter-discovery probe
-  plus a real mining device open at once was observed to abort the process
-  (`std::system_error: Invalid argument`). That's why GPU discovery
-  (`scripts/_probe-adapters.mjs`) runs as its own short-lived child process
-  instead of in-process — its Dawn instance is fully gone by the time the
-  real one is created. Don't merge that probe back into the main process.
+**Known limitation**: a single Chrome instance uses whichever GPU the
+system/driver exposes by default. There's no clean way to pin multiple
+Chrome instances to different physical GPUs, so multi-GPU support (which
+the native-binding version had) is out of scope for now — `src/pool.mjs`
+always builds a pool of exactly one.
 
 ## Troubleshooting: `npm` fails with a UNC path / `cmd.exe` error
 
@@ -192,3 +171,8 @@ corepack npm run bench
   you're willing to spend on gas + mint price.
 - `RPC_URL` / `CONTRACT_ADDRESS` / `CHAIN_ID_DECIMAL` are overridable via env
   vars in case the project ever redeploys.
+- Chrome is launched with `--no-sandbox` (needed to run as root in a
+  container without a configured SUID sandbox — standard practice for
+  headless Chrome in Docker). This is mitigated by the page only ever
+  loading local, self-authored content via `page.setContent()` — it never
+  navigates to a remote or untrusted URL.
