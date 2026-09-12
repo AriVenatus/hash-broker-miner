@@ -6,6 +6,12 @@
 import { buildPool } from '../src/pool.mjs';
 
 const BATCHES = Number(process.env.BENCH_BATCHES || 6);
+// Deliberately far above any real target: on fast hardware, an easy dummy
+// difficulty gets "found" within the first batch or two, which stops the
+// run before it's exercised enough dispatches to catch stability issues
+// under sustained load. 62 bits is not going to be found by accident in a
+// bench run, so BATCHES real dispatches always actually happen.
+const DIFFICULTY = Number(process.env.BENCH_DIFFICULTY || 62);
 
 console.log('Detecting GPUs...');
 const pool = await buildPool(console.log);
@@ -28,7 +34,7 @@ await Promise.all(
               done.add(label);
             }
           },
-          onFound: () => console.log(`[${label}] (found a matching proof early — the dummy target is easy on purpose)`),
+          onFound: () => console.log(`[${label}] (found a matching proof early — unlikely at BENCH_DIFFICULTY=${DIFFICULTY}, but harmless)`),
           onError: (error) => {
             console.error(`[${label}] GPU error: ${error.message}`);
             resolve();
@@ -37,7 +43,7 @@ await Promise.all(
         miner.setJob({
           address: '0x1111111111111111111111111111111111111111',
           challenge: '0x' + '42'.repeat(32),
-          difficulty: 30 // arbitrary — only used to exercise the pipeline, not a real target
+          difficulty: DIFFICULTY
         });
         miner.start().then(resolve).catch((error) => {
           console.error(`[${label}] GPU error: ${error.message}`);

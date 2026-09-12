@@ -34,20 +34,44 @@ fi
 cd "$DEPLOY_DIR"
 ./setup.sh --yes
 
-# PRIVATE_KEY is expected to already be set as an instance Env Var — see
-# the header above. setup.sh detects that automatically and skips writing
-# any wallet into .env.
+# Belt-and-suspenders: write PRIVATE_KEY into .env too (in addition to
+# whatever env var setup.sh already saw), so the miner can load it via
+# dotenv no matter how Supervisor's own environment inheritance behaves.
+if [ -n "${PRIVATE_KEY:-}" ]; then
+  [ -f .env ] || cp .env.example .env
+  if grep -q '^PRIVATE_KEY=' .env; then
+    sed -i "s|^PRIVATE_KEY=.*|PRIVATE_KEY=${PRIVATE_KEY}|" .env
+  else
+    echo "PRIVATE_KEY=${PRIVATE_KEY}" >> .env
+  fi
+fi
 
-# Run in the background so the on-start script can finish, restarting
-# automatically if the miner process ever exits (crash, GPU device-lost,
-# etc.) instead of silently going idle.
-nohup bash -c '
-  while true; do
-    npm start
-    code=$?
-    echo "[$(date -u +%FT%TZ)] miner exited (code $code), restarting in 10s" >> '"$DEPLOY_DIR"'/miner.log
-    sleep 10
-  done
-' > "$DEPLOY_DIR/miner.log" 2>&1 &
+# vastai/base-image already runs Supervisor as the container's own
+# always-on process manager (its other bundled apps — Jupyter, Tensorboard,
+# etc. — are Supervisor programs under /etc/supervisor/conf.d/). Register
+# the miner there instead of a hand-rolled `nohup ... &` background loop:
+# a plain background job's process group can get reaped when the on-start
+# script's own shell session ends, which is what happened the first time
+# (a crash killed the loop along with it, instead of being restarted).
+# Supervisor is the container's actual init-adjacent supervisor and
+# survives that.
+cat > /etc/supervisor/conf.d/hash-broker-miner.conf <<EOF
+[program:hash-broker-miner]
+directory=${DEPLOY_DIR}
+command=npm start
+autostart=true
+autorestart=true
+startretries=1000000
+stdout_logfile=${DEPLOY_DIR}/miner.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+redirect_stderr=true
+EOF
 
-echo "Miner launched in the background. Tail logs with: tail -f $DEPLOY_DIR/miner.log"
+supervisorctl reread
+supervisorctl update
+supervisorctl restart hash-broker-miner 2>/dev/null || supervisorctl start hash-broker-miner
+
+echo "Miner registered with Supervisor and started."
+echo "Status: supervisorctl status hash-broker-miner"
+echo "Logs:   tail -f ${DEPLOY_DIR}/miner.log"

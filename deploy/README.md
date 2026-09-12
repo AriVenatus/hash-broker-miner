@@ -40,14 +40,48 @@ SSH into the instance (vast.ai gives you the command on the instance card),
 then:
 
 ```bash
+supervisorctl status hash-broker-miner   # RUNNING, and check the uptime
 tail -f /root/hash-broker-miner/miner.log
 ```
 
 You should see the GPU discovery log, then per-round challenge/hashrate
-lines. If it instead shows a software-adapter warning or keeps restarting,
-stop and check `npm run bench` output in that same log — don't leave it
-mining unattended until that looks right (see the main README's "Tuning /
+lines. If it instead shows a software-adapter warning, or `supervisorctl
+status` shows it flapping between STARTING/BACKOFF/FATAL, stop and
+bench-test it first (see "Tuning the batch size" below) — don't leave it
+mining unattended until that looks stable (see the main README's "Tuning /
 hardware notes" for what a healthy vs. broken GPU backend looks like).
+
+**Why Supervisor and not a background `nohup` job**: the first version of
+this script backgrounded `npm start` in a `while true` restart loop with
+`nohup ... &`. That survives the SSH session hanging up, but not the
+on-start script's own process *group* being torn down — a GPU crash took
+the whole loop down with it instead of being restarted. `vastai/base-image`
+already runs Supervisor as the container's persistent process manager (it's
+what runs Jupyter/Tensorboard/etc. too), so the miner is registered there
+instead — it's the container's actual init-adjacent supervisor and
+survives what a background job doesn't.
+
+## Tuning the batch size for your GPU
+
+The native `webgpu` (Dawn) Node addon has been observed to crash under
+certain dispatch sizes/frequencies even on real hardware (see the main
+README's caveats section) — this seems to depend on the specific GPU, so
+it's worth bench-testing on the instance itself before trusting an
+unattended run:
+
+```bash
+cd /root/hash-broker-miner
+MINER_ITERATIONS=128  BENCH_BATCHES=200 npm run bench
+MINER_ITERATIONS=512  BENCH_BATCHES=200 npm run bench
+MINER_ITERATIONS=2048 BENCH_BATCHES=200 npm run bench
+```
+
+Each runs 200 real dispatches per GPU at a difficulty high enough that it
+won't get "found" early (so you actually get 200 dispatches' worth of
+stability signal, not just one). Whichever value survives all 200 without
+crashing, set `MINER_ITERATIONS=<value>` in the instance's Env Vars and
+restart the miner (`supervisorctl restart hash-broker-miner`) — Supervisor
+programs inherit the container's env vars, so no need to edit the conf file.
 
 ## Updating
 
@@ -59,5 +93,5 @@ boot — to update a *running* instance without restarting it:
 cd /root/hash-broker-miner
 git pull --ff-only
 ./setup.sh --yes
-pkill -f "npm start" || true   # the restart loop in vast-onstart.sh brings it back
+supervisorctl restart hash-broker-miner
 ```
