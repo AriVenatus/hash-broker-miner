@@ -199,6 +199,31 @@ window.__minerControl = {
 </body></html>`;
 }
 
+// When navigator.gpu (or adapter/device creation) isn't available, chrome://gpu
+// explains exactly why each graphics feature is enabled/disabled/disabled-for-a-
+// specific-reason -- pulling that in beats guessing at more launch flags blindly.
+async function diagnoseGpu(browser) {
+  let page;
+  try {
+    page = await browser.newPage();
+    await page.goto('chrome://gpu', { waitUntil: 'networkidle0', timeout: 15000 });
+    // chrome://gpu's exact markup/CSS classes vary by Chrome version, but the
+    // visible text of the feature-status list and any "Problems Detected"
+    // section is stable enough to just grep out of the page's full text.
+    const text = await page.evaluate(() => document.body.innerText || '');
+    const relevantLines = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /webgpu|vulkan|gpu process|problems detected|disabled/i.test(line))
+      .slice(0, 25);
+    return relevantLines.length ? relevantLines.join('\n') : '(no WebGPU/Vulkan/GPU-process lines found on chrome://gpu)';
+  } catch (error) {
+    return `(could not load chrome://gpu for diagnostics: ${error.message})`;
+  } finally {
+    await page?.close().catch(() => {});
+  }
+}
+
 export class BrowserMiner {
   constructor(callbacks = {}, options = {}) {
     this.callbacks = callbacks;
@@ -238,9 +263,14 @@ export class BrowserMiner {
     });
     await this.page.setContent(html, { waitUntil: 'load' });
 
-    const gpuName = await this.page.evaluate(() => window.__minerControl.init());
-    this.gpuName = gpuName;
-    return gpuName;
+    try {
+      const gpuName = await this.page.evaluate(() => window.__minerControl.init());
+      this.gpuName = gpuName;
+      return gpuName;
+    } catch (error) {
+      const diagnosis = await diagnoseGpu(this.browser);
+      throw new Error(`${error.message}\n--- chrome://gpu diagnostics ---\n${diagnosis}`);
+    }
   }
 
   _onReport(type, payload) {
